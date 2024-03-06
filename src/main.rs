@@ -43,6 +43,7 @@ impl WeatherEntry {
     }
 }
 
+#[inline]
 fn merge<'a>(
     mut left: HashMap<&'a str, WeatherEntry>,
     right: HashMap<&'a str, WeatherEntry>,
@@ -55,6 +56,28 @@ fn merge<'a>(
         }
     }
     left
+}
+
+#[inline]
+fn mapper<'a>(start: usize, end: usize, mmap_bytes: &'a [u8]) -> HashMap<&'a str, WeatherEntry> {
+    let mut map: HashMap<&str, WeatherEntry> = HashMap::new();
+    for line in mmap_bytes[start..end].split(|c| c == &b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        let mut delim = line.split(|c| c == &b';');
+        let name = std::str::from_utf8(delim.next().unwrap()).unwrap();
+        let temp = std::str::from_utf8(delim.next().unwrap())
+            .unwrap()
+            .parse::<f64>()
+            .unwrap();
+        if let Some(entry) = map.get_mut(name) {
+            entry.update(temp);
+        } else {
+            map.insert(name, WeatherEntry::new(temp));
+        }
+    }
+    map
 }
 
 fn main() -> std::io::Result<()> {
@@ -95,33 +118,13 @@ fn main() -> std::io::Result<()> {
             .iter()
             .position(|c| c == &b'\n')
             .unwrap_or(0);
-        let chunk_end = end + pad;
+        let end = end + pad;
         #[cfg(debug_assertions)]
-        println!("Starting thread {} at bytes[{}..{}]", _id, start, chunk_end);
+        println!("Starting thread {} at bytes[{}..{}]", _id, start, end);
         //thread::scope(|s| {
         let t = thread::Builder::new().name(_id.to_string());
-        handles.push(
-            t.spawn(move || {
-                let mut map: HashMap<&str, WeatherEntry> = HashMap::new();
-                for line in mmap_bytes[start..chunk_end].split(|c| c == &b'\n') {
-                    let mut s = std::str::from_utf8(line).unwrap().split(';');
-                    if line.is_empty() {
-                        continue;
-                    }
-                    let name = s.next().unwrap();
-                    let temp = s.next().unwrap().parse::<f64>().unwrap();
-                    if let Some(entry) = map.get_mut(name) {
-                        entry.update(temp);
-                    } else {
-                        map.insert(name, WeatherEntry::new(temp));
-                    }
-                }
-                map
-            })
-            .unwrap(),
-        );
-        //});
-        start += chunk_end - start + 1;
+        handles.push(t.spawn(move || mapper(start, end, mmap_bytes)).unwrap());
+        start += end - start + 1;
     }
 
     let report = handles
@@ -136,10 +139,6 @@ fn main() -> std::io::Result<()> {
         let val = report.get(name).unwrap();
         println!("{};{};{};{}", name, val.min, val.sum / val.cnt, val.max);
     }
-
-    //unsafe {
-    //    munmap(m, mmap_size);
-    //}
 
     Ok(())
 }
