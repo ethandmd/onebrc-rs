@@ -1,7 +1,9 @@
 // Read data. Calculate min/ave/max. Print results alphabetically by station name.
 use libc::{mmap, off_t, MAP_PRIVATE, PROT_READ};
 use std::collections::HashMap;
+//use std::collections::HashMap;
 use std::fs::File;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::io::Error;
 use std::os::fd::AsRawFd;
 use std::ptr::null_mut;
@@ -46,17 +48,42 @@ impl Default for WeatherEntry {
     }
 }
 
-//#[inline]
-//fn bytes_to_str(bytes: &'a [u8]) -> &'a str {
-//    let len = bytes.len();
-//    let mut s = str::
-//}
+#[derive(Clone)]
+struct LilFnvHasher(u64);
+
+const INITIAL_STATE: u64 = 0xcbf2_9ce4_8422_2325;
+const PRIME: u64 = 0x0100_0000_01b3;
+
+impl Default for LilFnvHasher {
+    #[inline]
+    fn default() -> Self {
+        LilFnvHasher(INITIAL_STATE)
+    }
+}
+
+impl Hasher for LilFnvHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes.iter() {
+            self.0 ^= u64::from(*b);
+            self.0 = self.0.wrapping_mul(PRIME);
+        }
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+type LilFnvHashBuilder = BuildHasherDefault<LilFnvHasher>;
+type LilFnvHashMap<K, V> = HashMap<K, V, LilFnvHashBuilder>;
 
 #[inline]
 fn merge<'a>(
-    mut left: HashMap<&'a [u8], WeatherEntry>,
-    right: HashMap<&'a [u8], WeatherEntry>,
-) -> HashMap<&'a [u8], WeatherEntry> {
+    mut left: LilFnvHashMap<&'a [u8], WeatherEntry>,
+    right: LilFnvHashMap<&'a [u8], WeatherEntry>,
+) -> LilFnvHashMap<&'a [u8], WeatherEntry> {
     for (right_key, right_val) in right.into_iter() {
         if let Some(left_val) = left.get_mut(right_key) {
             left_val.merge(&right_val);
@@ -68,8 +95,8 @@ fn merge<'a>(
 }
 
 #[inline]
-fn mapper(start: usize, end: usize, mmap_bytes: &[u8]) -> HashMap<&[u8], WeatherEntry> {
-    let mut map: HashMap<&[u8], WeatherEntry> = HashMap::new();
+fn mapper(start: usize, end: usize, mmap_bytes: &[u8]) -> LilFnvHashMap<&[u8], WeatherEntry> {
+    let mut map: LilFnvHashMap<&[u8], WeatherEntry> = LilFnvHashMap::default();
     for line in mmap_bytes[start..end].split(|c| c == &b'\n') {
         if line.is_empty() {
             continue;
@@ -78,8 +105,8 @@ fn mapper(start: usize, end: usize, mmap_bytes: &[u8]) -> HashMap<&[u8], Weather
         //let name = std::str::from_utf8(delim.next().unwrap()).unwrap();
         let name = delim.next().unwrap();
         // SAFETY: We already know the inputs are valid utf8.
-        let temp = unsafe { std::str::from_utf8_unchecked(delim.next().unwrap()) }
-            //.unwrap()
+        let tmp = delim.next().unwrap();
+        let temp = unsafe { std::str::from_utf8_unchecked(tmp) }
             .parse::<f64>()
             .unwrap();
         let entry = map.entry(name).or_default();
