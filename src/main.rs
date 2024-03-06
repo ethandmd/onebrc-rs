@@ -1,14 +1,15 @@
 // Read data. Calculate min/ave/max. Print results alphabetically by station name.
-use libc::{c_void, mmap, off_t, MAP_PRIVATE, PROT_READ};
+use libc::{mmap, off_t, MAP_PRIVATE, PROT_READ};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Error;
 use std::os::fd::AsRawFd;
 use std::ptr::null_mut;
+use std::str::from_utf8;
 use std::thread::available_parallelism;
 use std::{slice, thread};
 
-const WEATHER_DATA: &'static str = "measurements.txt";
+const WEATHER_DATA: &str = "measurements.txt";
 
 #[derive(Clone)]
 struct WeatherEntry {
@@ -45,28 +46,29 @@ impl WeatherEntry {
 
 #[inline]
 fn merge<'a>(
-    mut left: HashMap<&'a str, WeatherEntry>,
-    right: HashMap<&'a str, WeatherEntry>,
-) -> HashMap<&'a str, WeatherEntry> {
+    mut left: HashMap<&'a [u8], WeatherEntry>,
+    right: HashMap<&'a [u8], WeatherEntry>,
+) -> HashMap<&'a [u8], WeatherEntry> {
     for (right_key, right_val) in right.into_iter() {
         if let Some(left_val) = left.get_mut(right_key) {
             left_val.merge(&right_val);
         } else {
-            left.insert(&right_key, right_val.to_owned());
+            left.insert(right_key, right_val.to_owned());
         }
     }
     left
 }
 
 #[inline]
-fn mapper<'a>(start: usize, end: usize, mmap_bytes: &'a [u8]) -> HashMap<&'a str, WeatherEntry> {
-    let mut map: HashMap<&str, WeatherEntry> = HashMap::new();
+fn mapper(start: usize, end: usize, mmap_bytes: &[u8]) -> HashMap<&[u8], WeatherEntry> {
+    let mut map: HashMap<&[u8], WeatherEntry> = HashMap::new();
     for line in mmap_bytes[start..end].split(|c| c == &b'\n') {
         if line.is_empty() {
             continue;
         }
         let mut delim = line.split(|c| c == &b';');
-        let name = std::str::from_utf8(delim.next().unwrap()).unwrap();
+        //let name = std::str::from_utf8(delim.next().unwrap()).unwrap();
+        let name = delim.next().unwrap();
         let temp = std::str::from_utf8(delim.next().unwrap())
             .unwrap()
             .parse::<f64>()
@@ -95,7 +97,7 @@ fn main() -> std::io::Result<()> {
 
     let m = unsafe {
         mmap(
-            null_mut() as *mut c_void,
+            null_mut(),
             mmap_size,
             PROT_READ,
             MAP_PRIVATE,
@@ -133,10 +135,10 @@ fn main() -> std::io::Result<()> {
         .reduce(|left, right| merge(left, right))
         .unwrap();
 
-    let mut sorts: Vec<&&str> = report.keys().collect();
+    let mut sorts: Vec<&str> = report.keys().map(|b| from_utf8(b).unwrap()).collect();
     sorts.sort_by(|a, b| a.partial_cmp(b).expect("Sort by cmp fn didn't work."));
     for name in sorts {
-        let val = report.get(name).unwrap();
+        let val = report.get(name.as_bytes()).unwrap();
         println!("{};{};{};{}", name, val.min, val.sum / val.cnt, val.max);
     }
 
