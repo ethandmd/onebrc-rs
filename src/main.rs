@@ -20,15 +20,6 @@ struct WeatherEntry {
 }
 
 impl WeatherEntry {
-    fn new(temp: f64) -> Self {
-        Self {
-            min: temp,
-            sum: temp,
-            max: temp,
-            cnt: 1.0,
-        }
-    }
-
     fn update(&mut self, temp: f64) {
         self.min = self.min.min(temp);
         self.max = self.max.max(temp);
@@ -43,6 +34,23 @@ impl WeatherEntry {
         self.cnt += other.cnt;
     }
 }
+
+impl Default for WeatherEntry {
+    fn default() -> Self {
+        Self {
+            min: f64::MAX,
+            sum: 0.0,
+            max: f64::MIN,
+            cnt: 0.0,
+        }
+    }
+}
+
+//#[inline]
+//fn bytes_to_str(bytes: &'a [u8]) -> &'a str {
+//    let len = bytes.len();
+//    let mut s = str::
+//}
 
 #[inline]
 fn merge<'a>(
@@ -69,15 +77,13 @@ fn mapper(start: usize, end: usize, mmap_bytes: &[u8]) -> HashMap<&[u8], Weather
         let mut delim = line.split(|c| c == &b';');
         //let name = std::str::from_utf8(delim.next().unwrap()).unwrap();
         let name = delim.next().unwrap();
-        let temp = std::str::from_utf8(delim.next().unwrap())
-            .unwrap()
+        // SAFETY: We already know the inputs are valid utf8.
+        let temp = unsafe { std::str::from_utf8_unchecked(delim.next().unwrap()) }
+            //.unwrap()
             .parse::<f64>()
             .unwrap();
-        if let Some(entry) = map.get_mut(name) {
-            entry.update(temp);
-        } else {
-            map.insert(name, WeatherEntry::new(temp));
-        }
+        let entry = map.entry(name).or_default();
+        (*entry).update(temp);
     }
     map
 }
