@@ -6,7 +6,7 @@ use std::hash::{BuildHasherDefault, Hasher};
 use std::io::Error;
 use std::os::fd::AsRawFd;
 use std::ptr::null_mut;
-use std::str::from_utf8;
+use std::str::{from_utf8, from_utf8_unchecked};
 use std::thread::available_parallelism;
 use std::{slice, thread};
 
@@ -14,18 +14,18 @@ const WEATHER_DATA: &str = "measurements.txt";
 
 #[derive(Clone)]
 struct WeatherEntry {
-    min: f64,
-    sum: f64,
-    max: f64,
-    cnt: f64, // Make it easier to divide ave/cnt.
+    min: i32,
+    sum: i32,
+    max: i32,
+    cnt: i32, // Make it easier to divide ave/cnt.
 }
 
 impl WeatherEntry {
-    fn update(&mut self, temp: f64) {
+    fn update(&mut self, temp: i32) {
         self.min = self.min.min(temp);
         self.max = self.max.max(temp);
         self.sum += temp;
-        self.cnt += 1.0;
+        self.cnt += 1;
     }
 
     fn merge(&mut self, other: &Self) {
@@ -39,10 +39,10 @@ impl WeatherEntry {
 impl Default for WeatherEntry {
     fn default() -> Self {
         Self {
-            min: f64::MAX,
-            sum: 0.0,
-            max: f64::MIN,
-            cnt: 0.0,
+            min: i32::MAX,
+            sum: 0,
+            max: i32::MIN,
+            cnt: 0,
         }
     }
 }
@@ -85,6 +85,32 @@ fn chunker(start: usize, n: usize, delim: u8, b: &[u8]) -> (usize, usize) {
     let end = (start + n).min(b.len());
     let pad = b[end..].iter().position(|c| c == &delim).unwrap_or(0);
     (start, end + pad)
+}
+
+// Parse a utf8 encoded byte slice representing a floating point number (that we know in advance
+// will have precision to the tens place at most) as an integer.
+#[inline]
+fn utf8_funky_int(b: &[u8]) -> Result<i32, ()> {
+    let sign = if let Some(sign) = b.first() {
+        sign == &b'-'
+    } else {
+        return Err(());
+    };
+    // SAFETY: Inputs are known to be valid UTF8, however improper map-reduce logic could yield
+    // an unforeseen edge case that could cause a panic. Beware.
+    let int = unsafe { from_utf8_unchecked(b) }.chars().fold(0, |acc, c| {
+        if let Some(d) = c.to_digit(10) {
+            acc * 10 + d
+        } else {
+            acc
+        }
+    });
+
+    if sign {
+        Ok(-(int as i32))
+    } else {
+        Ok(int as i32)
+    }
 }
 
 #[inline]
@@ -140,16 +166,9 @@ fn mapper(start: usize, end: usize, mmap_bytes: &[u8]) -> LilFnvHashMap<&[u8], W
         let name1 = delim1.next().unwrap();
         let name2 = delim2.next().unwrap();
         let name3 = delim3.next().unwrap();
-        // SAFETY: We already know the inputs are valid utf8.
-        let temp1 = unsafe { std::str::from_utf8_unchecked(delim1.next().unwrap()) }
-            .parse::<f64>()
-            .unwrap();
-        let temp2 = unsafe { std::str::from_utf8_unchecked(delim2.next().unwrap()) }
-            .parse::<f64>()
-            .unwrap();
-        let temp3 = unsafe { std::str::from_utf8_unchecked(delim3.next().unwrap()) }
-            .parse::<f64>()
-            .unwrap();
+        let temp1 = utf8_funky_int(delim1.next().unwrap()).unwrap();
+        let temp2 = utf8_funky_int(delim2.next().unwrap()).unwrap();
+        let temp3 = utf8_funky_int(delim3.next().unwrap()).unwrap();
         let entry = map.entry(name1).or_default();
         (*entry).update(temp1);
         let entry = map.entry(name2).or_default();
@@ -158,32 +177,26 @@ fn mapper(start: usize, end: usize, mmap_bytes: &[u8]) -> LilFnvHashMap<&[u8], W
         (*entry).update(temp3);
     }
 
-    while let Some(line) = lines1.next() {
+    for line in lines1 {
         let mut delim = line.split(|c| c == &b';');
         let name = delim.next().unwrap();
-        let temp = unsafe { std::str::from_utf8_unchecked(delim.next().unwrap()) }
-            .parse::<f64>()
-            .unwrap();
+        let temp = utf8_funky_int(delim.next().unwrap()).unwrap();
         let entry = map.entry(name).or_default();
         (*entry).update(temp);
     }
 
-    while let Some(line) = lines2.next() {
+    for line in lines2 {
         let mut delim = line.split(|c| c == &b';');
         let name = delim.next().unwrap();
-        let temp = unsafe { std::str::from_utf8_unchecked(delim.next().unwrap()) }
-            .parse::<f64>()
-            .unwrap();
+        let temp = utf8_funky_int(delim.next().unwrap()).unwrap();
         let entry = map.entry(name).or_default();
         (*entry).update(temp);
     }
 
-    while let Some(line) = lines3.next() {
+    for line in lines3 {
         let mut delim = line.split(|c| c == &b';');
         let name = delim.next().unwrap();
-        let temp = unsafe { std::str::from_utf8_unchecked(delim.next().unwrap()) }
-            .parse::<f64>()
-            .unwrap();
+        let temp = utf8_funky_int(delim.next().unwrap()).unwrap();
         let entry = map.entry(name).or_default();
         (*entry).update(temp);
     }
@@ -246,7 +259,15 @@ fn main() -> std::io::Result<()> {
     sorts.sort_by(|a, b| a.partial_cmp(b).expect("Sort by cmp fn didn't work."));
     for name in sorts {
         let val = report.get(name.as_bytes()).unwrap();
-        println!("{};{};{};{}", name, val.min, val.sum / val.cnt, val.max);
+        println!(
+            "{};{};{};{}",
+            name,
+            (val.min as f32) / 10.0,
+            (val.sum as f32) / ((val.cnt * 10) as f32),
+            (val.max as f32) / 10.0 //val.min,
+                                    //val.sum / val.cnt,
+                                    //val.max
+        );
     }
 
     Ok(())
